@@ -2,19 +2,25 @@ import { useState } from "react";
 import CallControls from "./Components/CallControls";
 import StatusIndicator from "./Components/StatusIndicator";
 import TestOrders from "./Components/TestOrders";
+import useSpeechRecognition from "./hooks/useSpeechRecognition";
 import "./App.css";
 
 export default function App() {
-  const [status, setStatus] = useState("idle");
+  const [callActive, setCallActive] = useState(false);
 
-  const isCallActive = status !== "idle";
+  const { transcript, isListening, error, startListening, stopListening } =
+    useSpeechRecognition();
+
+  const status = isListening ? "listening" : "idle";
 
   function handleStartCall() {
-    setStatus("listening");
+    setCallActive(true);
+    startListening();
   }
 
   function handleEndCall() {
-    setStatus("idle");
+    stopListening();
+    setCallActive(false);
   }
 
   return (
@@ -37,10 +43,21 @@ export default function App() {
         </p>
 
         <CallControls
-          isCallActive={isCallActive}
+          isCallActive={callActive}
           onStart={handleStartCall}
           onEnd={handleEndCall}
         />
+
+        {error && (
+          <p role="alert" className="error-message">
+            {error}
+          </p>
+        )}
+
+        <div className="transcript-box">
+          <h3>Recognized Speech</h3>
+          <p>{transcript || "Your spoken words will appear here..."}</p>
+        </div>
       </section>
 
       <TestOrders />

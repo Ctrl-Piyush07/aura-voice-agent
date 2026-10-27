@@ -1,26 +1,51 @@
-import { useState } from "react";
-import CallControls from "./Components/CallControls";
-import StatusIndicator from "./Components/StatusIndicator";
-import TestOrders from "./Components/TestOrders";
+import { useRef, useState } from "react";
+import CallControls from "./components/CallControls";
+import StatusIndicator from "./components/StatusIndicator";
+import TestOrders from "./components/TestOrders";
 import useSpeechRecognition from "./hooks/useSpeechRecognition";
+import useTextToSpeech from "./hooks/useTextToSpeech";
 import "./App.css";
 
 export default function App() {
   const [callActive, setCallActive] = useState(false);
+  const callActiveRef = useRef(false);
 
-  const { transcript, isListening, error, startListening, stopListening } =
-    useSpeechRecognition();
+  const {
+    transcript,
+    isListening,
+    error: recognitionError,
+    startListening,
+    stopListening,
+  } = useSpeechRecognition();
 
-  const status = isListening ? "listening" : "idle";
+  const {
+    speak,
+    stopSpeaking,
+    isSpeaking,
+    error: speechError,
+  } = useTextToSpeech();
+
+  const status = isSpeaking ? "speaking" : isListening ? "listening" : "idle";
 
   function handleStartCall() {
+    callActiveRef.current = true;
     setCallActive(true);
-    startListening();
+
+    const greeting =
+      "Hi! I'm Aria from Aura Skincare. " + "How can I help you today?";
+
+    speak(greeting, () => {
+      if (callActiveRef.current) {
+        startListening();
+      }
+    });
   }
 
   function handleEndCall() {
-    stopListening();
+    callActiveRef.current = false;
     setCallActive(false);
+    stopSpeaking();
+    stopListening();
   }
 
   return (
@@ -48,9 +73,9 @@ export default function App() {
           onEnd={handleEndCall}
         />
 
-        {error && (
+        {(recognitionError || speechError) && (
           <p role="alert" className="error-message">
-            {error}
+            {recognitionError || speechError}
           </p>
         )}
 

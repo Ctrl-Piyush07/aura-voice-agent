@@ -1,6 +1,12 @@
 import express from "express";
 import cors from "cors";
+import dotenv from "dotenv";
 import orders from "./orders.json" with { type: "json" };
+
+// Load environment variables from server/.env
+dotenv.config({
+  path: new URL("./.env", import.meta.url),
+});
 
 const app = express();
 
@@ -39,4 +45,10 @@ const PORT = process.env.PORT || 3001;
 
 app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
+
+  // Check whether the Gemini API key is configured.
+  // Never print the actual key.
+  console.log(
+    `Gemini API key configured: ${Boolean(process.env.GEMINI_API_KEY)}`,
+  );
 });

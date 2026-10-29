@@ -2,14 +2,24 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
+
 import orders from "./orders.json" with { type: "json" };
+
 import { orderToolDeclaration } from "./orderToolDeclaration.js";
 import { getOrderDetails } from "./orderTools.js";
+import { ariaInstructions } from "./ariaInstructions.js";
 
-// Load backend environment variables
+// --------------------------------------------------
+// 1. Load environment variables
+// --------------------------------------------------
+
 dotenv.config({
   path: new URL("./.env", import.meta.url),
 });
+
+// --------------------------------------------------
+// 2. Initialize Express
+// --------------------------------------------------
 
 const app = express();
 
@@ -21,7 +31,10 @@ app.use(
 
 app.use(express.json());
 
-// Initialize Gemini on the backend
+// --------------------------------------------------
+// 3. Initialize Gemini
+// --------------------------------------------------
+
 const ai = process.env.GEMINI_API_KEY
   ? new GoogleGenAI({
       apiKey: process.env.GEMINI_API_KEY,
@@ -31,7 +44,10 @@ const ai = process.env.GEMINI_API_KEY
     })
   : null;
 
-// Health check
+// --------------------------------------------------
+// 4. Health check endpoint
+// --------------------------------------------------
+
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
@@ -39,9 +55,13 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Mock order lookup
+// --------------------------------------------------
+// 5. Mock order lookup endpoint
+// --------------------------------------------------
+
 app.get("/api/orders/:orderId", (req, res) => {
   const orderId = req.params.orderId.toUpperCase();
+
   const order = orders[orderId];
 
   if (!order) {
@@ -54,12 +74,18 @@ app.get("/api/orders/:orderId", (req, res) => {
   res.json(order);
 });
 
-// AI chat endpoint with conversation history and tool declarations
+// --------------------------------------------------
+// 6. AI chat endpoint
+// --------------------------------------------------
+
 app.post("/api/chat", async (req, res) => {
   try {
     const { message, history = [] } = req.body ?? {};
 
+    // ----------------------------------------------
     // Validate customer message
+    // ----------------------------------------------
+
     if (
       typeof message !== "string" ||
       !message.trim() ||
@@ -70,7 +96,10 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
+    // ----------------------------------------------
     // Validate conversation history
+    // ----------------------------------------------
+
     if (
       !Array.isArray(history) ||
       history.length > 20 ||
@@ -88,35 +117,60 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
+    // ----------------------------------------------
+    // Verify Gemini configuration
+    // ----------------------------------------------
+
     if (!ai) {
       return res.status(503).json({
         error: "AI service is not configured.",
       });
     }
 
-    // Convert conversation history into Gemini format
+    // ----------------------------------------------
+    // Prepare conversation history
+    // ----------------------------------------------
+
     const contents = history.map((item) => ({
       role: item.role,
-      parts: [{ text: item.text }],
+      parts: [
+        {
+          text: item.text,
+        },
+      ],
     }));
 
-    // Append the current customer message
+    // Add current customer message
     contents.push({
       role: "user",
-      parts: [{ text: message.trim() }],
+      parts: [
+        {
+          text: message.trim(),
+        },
+      ],
     });
 
     console.log("Processing customer message...");
 
+    // ----------------------------------------------
+    // First Gemini request
+    // Includes policies and function declarations
+    // ----------------------------------------------
+
     const response = await ai.models.generateContent({
       model: "gemini-3.5-flash-lite",
+
       contents,
+
       config: {
+        // Aura Skincare policies and guardrails
+        systemInstruction: ariaInstructions,
+
         thinkingConfig: {
           thinkingLevel: "low",
         },
 
-        // Make the order lookup tool available to Gemini
+        // Allow Gemini to request order details
         tools: [
           {
             functionDeclarations: [orderToolDeclaration],
@@ -125,10 +179,14 @@ app.post("/api/chat", async (req, res) => {
       },
     });
 
-    // Detect function calls requested by Gemini
+    // ----------------------------------------------
+    // 7. Handle Gemini function calling
+    // ----------------------------------------------
+
     if (response.functionCalls?.length > 0) {
       const functionCall = response.functionCalls[0];
 
+      // Reject unsupported functions
       if (functionCall.name !== "get_order_details") {
         return res.status(502).json({
           error: "Unknown AI function requested.",
@@ -137,16 +195,21 @@ app.post("/api/chat", async (req, res) => {
 
       console.log("Gemini requested:", functionCall.name);
 
-      // Extract the order ID requested by Gemini
+      // Extract order ID
       const orderId = functionCall.args?.order_id;
 
-      // Execute the real backend lookup function
+      // Execute actual backend function
       const orderResult = getOrderDetails(orderId);
 
       console.log(
         "Order lookup completed:",
         orderResult.error ? "Not found or invalid" : "Found",
       );
+
+      // --------------------------------------------
+      // Handle invalid order IDs
+      // Without making another Gemini request
+      // --------------------------------------------
 
       if (orderResult.error) {
         const reply = orderResult.order_id
@@ -158,12 +221,16 @@ app.post("/api/chat", async (req, res) => {
             name: functionCall.name,
             args: functionCall.args,
           },
+
           tool_result: orderResult,
+
           reply,
         });
       }
 
-      // Return the function request and verified database result
+      // --------------------------------------------
+      // Prepare verified function response
+      // --------------------------------------------
 
       const modelContent = response.candidates?.[0]?.content;
 
@@ -173,7 +240,6 @@ app.post("/api/chat", async (req, res) => {
         });
       }
 
-      // Prepare the verified result for Gemini
       const functionResponse = {
         name: functionCall.name,
         response: {
@@ -181,15 +247,20 @@ app.post("/api/chat", async (req, res) => {
         },
       };
 
-      // Preserve the function-call ID when provided
+      // Preserve function-call ID when provided
       if (functionCall.id) {
         functionResponse.id = functionCall.id;
       }
 
-      // Continue the conversation after executing the tool
+      // --------------------------------------------
+      // Continue Gemini conversation with tool data
+      // --------------------------------------------
+
       const followUpContents = [
         ...contents,
+
         modelContent,
+
         {
           role: "user",
           parts: [
@@ -200,20 +271,23 @@ app.post("/api/chat", async (req, res) => {
         },
       ];
 
-      // Generate a natural response using verified order data
+      // --------------------------------------------
+      // Second Gemini request
+      // Generate natural customer response
+      // --------------------------------------------
+
       const finalResponse = await ai.models.generateContent({
         model: "gemini-3.5-flash-lite",
+
         contents: followUpContents,
+
         config: {
+          // Apply the SAME Aura brand policies
+          systemInstruction: ariaInstructions,
+
           thinkingConfig: {
             thinkingLevel: "low",
           },
-          systemInstruction:
-            "You are Aria, a friendly Aura Skincare customer support agent. " +
-            "Answer concisely using only the verified order information " +
-            "returned by the function. Never invent order details, " +
-            "delivery estimates, or actions. Never claim an order was " +
-            "cancelled or refunded unless that action was actually performed.",
         },
       });
 
@@ -225,30 +299,36 @@ app.post("/api/chat", async (req, res) => {
         });
       }
 
-      // Return the completed order lookup and natural reply
+      // Return natural reply and verified order data
       return res.json({
         tool_call: {
           name: functionCall.name,
           args: functionCall.args,
         },
+
         tool_result: orderResult,
+
         reply: finalReply,
       });
     }
 
-    // Normal AI response when no function is needed
-    const reply = response.text;
+    // ----------------------------------------------
+    // 8. Normal conversation without function call
+    // ----------------------------------------------
 
-    if (!reply?.trim()) {
+    const reply = response.text?.trim();
+
+    if (!reply) {
       return res.status(502).json({
         error: "AI returned an empty response.",
       });
     }
 
     res.json({
-      reply: reply.trim(),
+      reply,
     });
   } catch (error) {
+    // Do not expose sensitive API details
     console.error("Gemini chat failed:", error.status ?? "Unknown status");
 
     res.status(502).json({
@@ -256,6 +336,10 @@ app.post("/api/chat", async (req, res) => {
     });
   }
 });
+
+// --------------------------------------------------
+// 9. Start Express server
+// --------------------------------------------------
 
 const PORT = process.env.PORT || 3001;
 

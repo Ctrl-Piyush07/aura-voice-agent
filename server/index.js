@@ -3,6 +3,8 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import orders from "./orders.json" with { type: "json" };
+import { orderToolDeclaration } from "./orderToolDeclaration.js";
+import { getOrderDetails } from "./orderTools.js";
 
 // Load backend environment variables
 dotenv.config({
@@ -52,7 +54,7 @@ app.get("/api/orders/:orderId", (req, res) => {
   res.json(order);
 });
 
-// AI chat endpoint with conversation history
+// AI chat endpoint with conversation history and tool declarations
 app.post("/api/chat", async (req, res) => {
   try {
     const { message, history = [] } = req.body ?? {};
@@ -68,7 +70,7 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    // Validate previous conversation messages
+    // Validate conversation history
     if (
       !Array.isArray(history) ||
       history.length > 20 ||
@@ -92,7 +94,7 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    // Convert previous messages into Gemini format
+    // Convert conversation history into Gemini format
     const contents = history.map((item) => ({
       role: item.role,
       parts: [{ text: item.text }],
@@ -113,9 +115,128 @@ app.post("/api/chat", async (req, res) => {
         thinkingConfig: {
           thinkingLevel: "low",
         },
+
+        // Make the order lookup tool available to Gemini
+        tools: [
+          {
+            functionDeclarations: [orderToolDeclaration],
+          },
+        ],
       },
     });
 
+    // Detect function calls requested by Gemini
+    if (response.functionCalls?.length > 0) {
+      const functionCall = response.functionCalls[0];
+
+      if (functionCall.name !== "get_order_details") {
+        return res.status(502).json({
+          error: "Unknown AI function requested.",
+        });
+      }
+
+      console.log("Gemini requested:", functionCall.name);
+
+      // Extract the order ID requested by Gemini
+      const orderId = functionCall.args?.order_id;
+
+      // Execute the real backend lookup function
+      const orderResult = getOrderDetails(orderId);
+
+      console.log(
+        "Order lookup completed:",
+        orderResult.error ? "Not found or invalid" : "Found",
+      );
+
+      if (orderResult.error) {
+        const reply = orderResult.order_id
+          ? `I'm sorry, but I couldn't find order ${orderResult.order_id}. Could you please double-check the order ID?`
+          : "I couldn't look up that order. Could you please provide a valid order ID?";
+
+        return res.json({
+          tool_call: {
+            name: functionCall.name,
+            args: functionCall.args,
+          },
+          tool_result: orderResult,
+          reply,
+        });
+      }
+
+      // Return the function request and verified database result
+
+      const modelContent = response.candidates?.[0]?.content;
+
+      if (!modelContent) {
+        return res.status(502).json({
+          error: "Missing AI function-call content.",
+        });
+      }
+
+      // Prepare the verified result for Gemini
+      const functionResponse = {
+        name: functionCall.name,
+        response: {
+          result: orderResult,
+        },
+      };
+
+      // Preserve the function-call ID when provided
+      if (functionCall.id) {
+        functionResponse.id = functionCall.id;
+      }
+
+      // Continue the conversation after executing the tool
+      const followUpContents = [
+        ...contents,
+        modelContent,
+        {
+          role: "user",
+          parts: [
+            {
+              functionResponse,
+            },
+          ],
+        },
+      ];
+
+      // Generate a natural response using verified order data
+      const finalResponse = await ai.models.generateContent({
+        model: "gemini-3.5-flash-lite",
+        contents: followUpContents,
+        config: {
+          thinkingConfig: {
+            thinkingLevel: "low",
+          },
+          systemInstruction:
+            "You are Aria, a friendly Aura Skincare customer support agent. " +
+            "Answer concisely using only the verified order information " +
+            "returned by the function. Never invent order details, " +
+            "delivery estimates, or actions. Never claim an order was " +
+            "cancelled or refunded unless that action was actually performed.",
+        },
+      });
+
+      const finalReply = finalResponse.text?.trim();
+
+      if (!finalReply) {
+        return res.status(502).json({
+          error: "AI returned an empty final response.",
+        });
+      }
+
+      // Return the completed order lookup and natural reply
+      return res.json({
+        tool_call: {
+          name: functionCall.name,
+          args: functionCall.args,
+        },
+        tool_result: orderResult,
+        reply: finalReply,
+      });
+    }
+
+    // Normal AI response when no function is needed
     const reply = response.text;
 
     if (!reply?.trim()) {

@@ -1,4 +1,3 @@
-
 import { useRef, useState } from "react";
 
 import CallControls from "./Components/CallControls";
@@ -7,20 +6,23 @@ import TestOrders from "./Components/TestOrders";
 
 import useSpeechRecognition from "./hooks/useSpeechRecognition";
 import useTextToSpeech from "./hooks/useTextToSpeech";
+import { sendChatMessage } from "./services/chatApi";
 
 import "./App.css";
 
 export default function App() {
-  // 1. Call state
   const [callActive, setCallActive] = useState(false);
-
-  // 2. Stores the customer's completed message
   const [completedMessage, setCompletedMessage] = useState("");
+  const [aiReply, setAiReply] = useState("");
+  const [isThinking, setIsThinking] = useState(false);
+  const [chatError, setChatError] = useState("");
 
-  // 3. Tracks whether the call is active inside callbacks
   const callActiveRef = useRef(false);
+  const historyRef = useRef([]);
+  const processingRef = useRef(false);
+  const callSessionRef = useRef(0);
 
-  // 4. Speech recognition hook
+  // Speech recognition
   const {
     transcript,
     isListening,
@@ -28,14 +30,75 @@ export default function App() {
     startListening,
     stopListening,
   } = useSpeechRecognition((message) => {
-    // Called after approximately 1.5 seconds of silence
-    if (callActiveRef.current) {
-      console.log("Customer message:", message);
-      setCompletedMessage(message);
+    if (!callActiveRef.current || processingRef.current) {
+      return;
     }
+
+    const session = callSessionRef.current;
+
+    processingRef.current = true;
+    setCompletedMessage(message);
+    setIsThinking(true);
+    setChatError("");
+    setAiReply("");
+
+    async function processMessage() {
+      try {
+        const data = await sendChatMessage(message, historyRef.current);
+
+        // Ignore responses from ended or older calls
+        if (!callActiveRef.current || callSessionRef.current !== session) {
+          return;
+        }
+
+        // Preserve conversation memory
+        historyRef.current = [
+          ...historyRef.current,
+          { role: "user", text: message },
+          { role: "model", text: data.reply },
+        ].slice(-20);
+
+        setAiReply(data.reply);
+        setIsThinking(false);
+
+        // NEW: Speak Gemini's answer
+        speak(data.reply, () => {
+          // NEW: Resume listening after speaking finishes
+          if (callActiveRef.current && callSessionRef.current === session) {
+            startListening();
+          }
+        });
+      } catch (error) {
+        if (callActiveRef.current && callSessionRef.current === session) {
+          console.error("Chat request failed:", error);
+
+          const fallback =
+            "Sorry, I'm having trouble responding right now. " +
+            "Could you please try again?";
+
+          setChatError("Unable to reach Aria's AI service. Please try again.");
+
+          setIsThinking(false);
+
+          // Speak a safe error message and resume listening
+          speak(fallback, () => {
+            if (callActiveRef.current && callSessionRef.current === session) {
+              startListening();
+            }
+          });
+        }
+      } finally {
+        if (callSessionRef.current === session) {
+          processingRef.current = false;
+          setIsThinking(false);
+        }
+      }
+    }
+
+    processMessage();
   });
 
-  // 5. Text-to-speech hook
+  // Text-to-speech
   const {
     speak,
     stopSpeaking,
@@ -43,107 +106,108 @@ export default function App() {
     error: speechError,
   } = useTextToSpeech();
 
-  // 6. Determine the current agent state
+  // Agent status
   const status = isSpeaking
     ? "speaking"
-    : isListening
-      ? "listening"
-      : callActive && completedMessage
-        ? "thinking"
+    : isThinking
+      ? "thinking"
+      : isListening
+        ? "listening"
         : "idle";
 
-  // 7. Start call
+  // Start a new call
   function handleStartCall() {
     if (callActiveRef.current) return;
 
-    setCompletedMessage("");
+    callSessionRef.current += 1;
     callActiveRef.current = true;
+    processingRef.current = false;
+    historyRef.current = [];
+
     setCallActive(true);
+    setCompletedMessage("");
+    setAiReply("");
+    setChatError("");
+    setIsThinking(false);
 
     const greeting =
-      "Hi! I'm Aria from Aura Skincare. " +
-      "How can I help you today?";
+      "Hi! I'm Aria from Aura Skincare. " + "How can I help you today?";
 
-    // Aria speaks first
     speak(greeting, () => {
-      // Start listening only if the call is still active
       if (callActiveRef.current) {
         startListening();
       }
     });
   }
 
-  // 8. End call
+  // End the current call
   function handleEndCall() {
     callActiveRef.current = false;
+    callSessionRef.current += 1;
+    processingRef.current = false;
+    historyRef.current = [];
+
     setCallActive(false);
+    setIsThinking(false);
 
     stopSpeaking();
     stopListening();
 
     setCompletedMessage("");
+    setAiReply("");
+    setChatError("");
   }
 
   return (
     <main className="app-container">
-      {/* Header */}
       <header className="app-header">
         <div className="brand-icon">✦</div>
-
         <div>
           <h1>Aria</h1>
           <p>Aura Skincare · AI Voice Support</p>
         </div>
       </header>
 
-      {/* Main call panel */}
       <section className="call-panel">
         <div className="microphone-icon">🎙️</div>
 
-        {/* Listening / Thinking / Speaking */}
         <StatusIndicator status={status} />
 
         <p className="call-description">
-          Ask about orders, shipping, returns,
-          refunds or cancellations.
+          Ask about orders, shipping, returns, refunds or cancellations.
         </p>
 
-        {/* Call buttons */}
         <CallControls
           isCallActive={callActive}
           onStart={handleStartCall}
           onEnd={handleEndCall}
         />
 
-        {/* Error handling */}
-        {(recognitionError || speechError) && (
+        {(recognitionError || speechError || chatError) && (
           <p role="alert" className="error-message">
-            {recognitionError || speechError}
+            {recognitionError || speechError || chatError}
           </p>
         )}
 
-        {/* Live speech recognition */}
         <div className="transcript-box">
           <h3>Recognized Speech</h3>
-
-          <p>
-            {transcript ||
-              "Your spoken words will appear here..."}
-          </p>
+          <p>{transcript || "Your spoken words will appear here..."}</p>
         </div>
 
-        {/* Completed customer message */}
         <div className="transcript-box">
           <h3>Completed Customer Message</h3>
-
           <p>
             {completedMessage ||
               "Waiting for the customer to finish speaking..."}
           </p>
         </div>
+
+        <div className="transcript-box">
+          <h3>Aria's AI Response</h3>
+          <p>{aiReply || "Aria's response will appear here..."}</p>
+        </div>
       </section>
 
-      {/* Sample orders */}
       <TestOrders />
     </main>
   );

@@ -1,7 +1,19 @@
-const API_BASE_URL = "http://localhost:3001";
+const configuredApiUrl = import.meta.env.VITE_API_BASE_URL?.trim();
+
+// Use localhost during development.
+// In production, require a configured backend URL.
+const API_BASE_URL = (
+  configuredApiUrl || (import.meta.env.DEV ? "http://localhost:3001" : "")
+).replace(/\/+$/, "");
 
 // Send a customer message to the Express backend
 export async function sendChatMessage(message, history = []) {
+  if (!API_BASE_URL) {
+    throw new Error(
+      "Backend API URL is not configured. Set VITE_API_BASE_URL.",
+    );
+  }
+
   const response = await fetch(`${API_BASE_URL}/api/chat`, {
     method: "POST",
 

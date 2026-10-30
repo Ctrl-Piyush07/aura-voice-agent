@@ -9,6 +9,9 @@ import { orderToolDeclaration } from "./orderToolDeclaration.js";
 import { getOrderDetails } from "./orderTools.js";
 import { ariaInstructions } from "./ariaInstructions.js";
 
+// NEW: Backend response safety validation
+import { enforceResponseGuardrails } from "./responseGuardrails.js";
+
 // --------------------------------------------------
 // 1. Load environment variables
 // --------------------------------------------------
@@ -299,7 +302,14 @@ app.post("/api/chat", async (req, res) => {
         });
       }
 
-      // Return natural reply and verified order data
+      // --------------------------------------------
+      // NEW: Validate final Gemini response
+      // after successful order lookup
+      // --------------------------------------------
+
+      const safeFinalReply = enforceResponseGuardrails(finalReply);
+
+      // Return validated reply and verified order data
       return res.json({
         tool_call: {
           name: functionCall.name,
@@ -308,7 +318,7 @@ app.post("/api/chat", async (req, res) => {
 
         tool_result: orderResult,
 
-        reply: finalReply,
+        reply: safeFinalReply,
       });
     }
 
@@ -324,8 +334,15 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
+    // ----------------------------------------------
+    // NEW: Validate normal Gemini responses
+    // before sending them to React
+    // ----------------------------------------------
+
+    const safeReply = enforceResponseGuardrails(reply);
+
     res.json({
-      reply,
+      reply: safeReply,
     });
   } catch (error) {
     // Do not expose sensitive API details

@@ -8,6 +8,9 @@ import useSpeechRecognition from "./hooks/useSpeechRecognition";
 import useTextToSpeech from "./hooks/useTextToSpeech";
 import { sendChatMessage } from "./services/chatApi";
 
+// NEW: Structured call outcome generator
+import { buildCallOutcome } from "./utils/buildCallOutcome";
+
 import "./App.css";
 
 export default function App() {
@@ -17,18 +20,17 @@ export default function App() {
   const [isThinking, setIsThinking] = useState(false);
   const [chatError, setChatError] = useState("");
 
-  // NEW: Complete chronological call transcript
   const [callTranscript, setCallTranscript] = useState([]);
+
+  // NEW: Structured post-call JSON
+  const [callOutcome, setCallOutcome] = useState(null);
 
   const callActiveRef = useRef(false);
   const historyRef = useRef([]);
   const processingRef = useRef(false);
   const callSessionRef = useRef(0);
-
-  // NEW: Unique transcript message IDs
   const transcriptIdRef = useRef(0);
 
-  // NEW: Record one completed conversation message
   function addTranscriptMessage(speaker, text) {
     const entry = {
       id: ++transcriptIdRef.current,
@@ -60,7 +62,6 @@ export default function App() {
     setChatError("");
     setAiReply("");
 
-    // NEW: Save the completed customer message
     addTranscriptMessage("Customer", message);
 
     async function processMessage() {
@@ -82,12 +83,10 @@ export default function App() {
         setAiReply(data.reply);
         setIsThinking(false);
 
-        // NEW: Save Aria's response
         addTranscriptMessage("Aria", data.reply);
 
         // Speak Gemini's answer
         speak(data.reply, () => {
-          // Resume listening after speaking finishes
           if (callActiveRef.current && callSessionRef.current === session) {
             startListening();
           }
@@ -104,7 +103,6 @@ export default function App() {
 
           setIsThinking(false);
 
-          // NEW: Record the spoken error response
           addTranscriptMessage("Aria", fallback);
 
           speak(fallback, () => {
@@ -152,9 +150,12 @@ export default function App() {
     processingRef.current = false;
     historyRef.current = [];
 
-    // NEW: Reset transcript for the new call
+    // Reset transcript for the new call
     transcriptIdRef.current = 0;
     setCallTranscript([]);
+
+    // NEW: Clear previous call outcome
+    setCallOutcome(null);
 
     setCallActive(true);
     setCompletedMessage("");
@@ -165,7 +166,6 @@ export default function App() {
     const greeting =
       "Hi! I'm Aria from Aura Skincare. " + "How can I help you today?";
 
-    // NEW: Save Aria's greeting
     addTranscriptMessage("Aria", greeting);
 
     speak(greeting, () => {
@@ -177,6 +177,10 @@ export default function App() {
 
   // End the current call
   function handleEndCall() {
+    // NEW: Generate structured JSON from the transcript
+    const outcome = buildCallOutcome(callTranscript);
+    setCallOutcome(outcome);
+
     callActiveRef.current = false;
     callSessionRef.current += 1;
     processingRef.current = false;
@@ -192,9 +196,8 @@ export default function App() {
     setAiReply("");
     setChatError("");
 
-    // IMPORTANT:
-    // Do not clear callTranscript here.
-    // The completed call remains visible for review.
+    // Preserve callTranscript and callOutcome
+    // for post-call review.
   }
 
   return (
@@ -246,7 +249,7 @@ export default function App() {
           <p>{aiReply || "Aria's response will appear here..."}</p>
         </div>
 
-        {/* NEW: Complete conversation transcript */}
+        {/* Chronological conversation transcript */}
         <div className="transcript-box">
           <h3>Call Transcript</h3>
 
@@ -265,6 +268,25 @@ export default function App() {
                 </li>
               ))}
             </ol>
+          )}
+        </div>
+
+        {/* NEW: Structured call outcome JSON */}
+        <div className="transcript-box">
+          <h3>Structured Call Outcome (JSON)</h3>
+
+          {callOutcome ? (
+            <pre
+              style={{
+                textAlign: "left",
+                whiteSpace: "pre-wrap",
+                overflowWrap: "anywhere",
+              }}
+            >
+              {JSON.stringify(callOutcome, null, 2)}
+            </pre>
+          ) : (
+            <p>End the call to generate the structured call summary.</p>
           )}
         </div>
       </section>

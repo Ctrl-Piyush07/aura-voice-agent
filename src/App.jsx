@@ -17,10 +17,28 @@ export default function App() {
   const [isThinking, setIsThinking] = useState(false);
   const [chatError, setChatError] = useState("");
 
+  // NEW: Complete chronological call transcript
+  const [callTranscript, setCallTranscript] = useState([]);
+
   const callActiveRef = useRef(false);
   const historyRef = useRef([]);
   const processingRef = useRef(false);
   const callSessionRef = useRef(0);
+
+  // NEW: Unique transcript message IDs
+  const transcriptIdRef = useRef(0);
+
+  // NEW: Record one completed conversation message
+  function addTranscriptMessage(speaker, text) {
+    const entry = {
+      id: ++transcriptIdRef.current,
+      speaker,
+      text,
+      timestamp: new Date().toISOString(),
+    };
+
+    setCallTranscript((previous) => [...previous, entry]);
+  }
 
   // Speech recognition
   const {
@@ -42,6 +60,9 @@ export default function App() {
     setChatError("");
     setAiReply("");
 
+    // NEW: Save the completed customer message
+    addTranscriptMessage("Customer", message);
+
     async function processMessage() {
       try {
         const data = await sendChatMessage(message, historyRef.current);
@@ -51,7 +72,7 @@ export default function App() {
           return;
         }
 
-        // Preserve conversation memory
+        // Preserve Gemini conversation memory
         historyRef.current = [
           ...historyRef.current,
           { role: "user", text: message },
@@ -61,9 +82,12 @@ export default function App() {
         setAiReply(data.reply);
         setIsThinking(false);
 
-        // NEW: Speak Gemini's answer
+        // NEW: Save Aria's response
+        addTranscriptMessage("Aria", data.reply);
+
+        // Speak Gemini's answer
         speak(data.reply, () => {
-          // NEW: Resume listening after speaking finishes
+          // Resume listening after speaking finishes
           if (callActiveRef.current && callSessionRef.current === session) {
             startListening();
           }
@@ -80,7 +104,9 @@ export default function App() {
 
           setIsThinking(false);
 
-          // Speak a safe error message and resume listening
+          // NEW: Record the spoken error response
+          addTranscriptMessage("Aria", fallback);
+
           speak(fallback, () => {
             if (callActiveRef.current && callSessionRef.current === session) {
               startListening();
@@ -120,9 +146,15 @@ export default function App() {
     if (callActiveRef.current) return;
 
     callSessionRef.current += 1;
+    const session = callSessionRef.current;
+
     callActiveRef.current = true;
     processingRef.current = false;
     historyRef.current = [];
+
+    // NEW: Reset transcript for the new call
+    transcriptIdRef.current = 0;
+    setCallTranscript([]);
 
     setCallActive(true);
     setCompletedMessage("");
@@ -133,8 +165,11 @@ export default function App() {
     const greeting =
       "Hi! I'm Aria from Aura Skincare. " + "How can I help you today?";
 
+    // NEW: Save Aria's greeting
+    addTranscriptMessage("Aria", greeting);
+
     speak(greeting, () => {
-      if (callActiveRef.current) {
+      if (callActiveRef.current && callSessionRef.current === session) {
         startListening();
       }
     });
@@ -156,6 +191,10 @@ export default function App() {
     setCompletedMessage("");
     setAiReply("");
     setChatError("");
+
+    // IMPORTANT:
+    // Do not clear callTranscript here.
+    // The completed call remains visible for review.
   }
 
   return (
@@ -205,6 +244,28 @@ export default function App() {
         <div className="transcript-box">
           <h3>Aria's AI Response</h3>
           <p>{aiReply || "Aria's response will appear here..."}</p>
+        </div>
+
+        {/* NEW: Complete conversation transcript */}
+        <div className="transcript-box">
+          <h3>Call Transcript</h3>
+
+          {callTranscript.length === 0 ? (
+            <p>Your conversation history will appear here.</p>
+          ) : (
+            <ol>
+              {callTranscript.map((entry) => (
+                <li key={entry.id}>
+                  <p>
+                    <strong>{entry.speaker}:</strong> {entry.text}
+                  </p>
+                  <small>
+                    {new Date(entry.timestamp).toLocaleTimeString()}
+                  </small>
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
       </section>
 
